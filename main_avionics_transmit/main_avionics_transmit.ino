@@ -38,7 +38,7 @@ LoRa_E22 e22ttl(&Serial1, LORA_AUX, LORA_M0, LORA_M1); // LoRa initialization.
 
 float flat, flon; // GPS data variables.
 unsigned long age; // 
-float temp, altitude; // Variables to get from pressure sensor.
+float temp, altitude, pressure; // Variables to get from pressure sensor.
 int counter = 0; // Package id counter.
 
 // Payload data stucture to send over LoRa WAN.
@@ -46,6 +46,7 @@ struct Payload {
   int package_id; // Package id
   byte temp[4]; // Temperature data
   byte altitude[4]; // Altitude
+  byte pressure[4]; // Pressure
   byte gps_lat[4]; // GPS Latitude
   byte gps_long[4]; // GPS Longtitude
   byte accl_x[4]; // X axis acceleration
@@ -56,13 +57,20 @@ struct Payload {
   byte gyro_z[4]; // Z axis gyroscope
 } payload;
 
+// ----- Function definitions section -----
+
+void printParameters(struct Configuration configuration);
+void printModuleInformation(struct ModuleInformation moduleInformation);
+
+// ----- Arduino Functions -----
+
 void setup() {
   initialize_serial_ports();
   initialize_leds();
   initialize_buzzer();
   initialize_bmp180();
   initialize_mpu6050();
-  e22ttl.begin(); // Initialize LoRa.
+  initialize_lora();
 
   digitalWrite(LED_RUN, HIGH); // System is working.
 }
@@ -121,6 +129,26 @@ void initialize_mpu6050() {
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 }
 
+/**
+  Initialize LoRa and get configuration from the device.
+*/
+void initialize_lora() {
+  e22ttl.begin();
+  ResponseStructContainer c;
+	c = e22ttl.getConfiguration();
+	// It's important get configuration pointer before all other operation
+	Configuration configuration = *(Configuration*) c.data;
+
+  if (c.status.code == 1) {
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(BUZZER_PIN, HIGH);
+      delay(50);
+      digitalWrite(BUZZER_PIN, LOW);
+      delay(50);
+    }
+  }
+}
+
 void loop() {
   get_gps_sample();
 
@@ -128,13 +156,25 @@ void loop() {
     
   get_altitude_sample();
 
+  get_pressure_sample();
+
   get_imu_sample();
 
   increment_counter();
 
   print_data_to_serial();
 
-  // transmit_payload();
+  transmit_payload();
+
+  if (payload.altitude > 2000) {
+    Serial.println("Irtifa ulasildi.");
+    for (int i = 0; i < 2; i++) {
+      digitalWrite(BUZZER_PIN, HIGH);
+      delay(50);
+      digitalWrite(BUZZER_PIN, LOW);
+      delay(50);
+    }
+  }
 }
 
 /**
@@ -165,8 +205,17 @@ void get_temp_sample() {
 */
 void get_altitude_sample() {
   // Read altitude data.
-  altitude = bmp.readAltitude();
+  altitude = bmp.readAltitude(KAYSERI_SEA_LEVEL_PRESSURE);
   *(float*)(payload.altitude) = altitude;
+}
+
+/**
+  Gets sea level pressure data from BMP180 and adds it to the payload struct.
+*/
+void get_pressure_sample() {
+  // Read pressure data.
+  pressure = bmp.readSealevelPressure();
+  *(float*)(payload.pressure) = pressure;
 }
 
 /**
@@ -191,7 +240,7 @@ void get_imu_sample() {
 */
 void transmit_payload() {
   digitalWrite(LED_TX, HIGH);
-  ResponseStatus rs = e22ttl.sendBroadcastFixedMessage(LORA_CHANNEL, &payload, sizeof(Payload));
+  e22ttl.sendBroadcastFixedMessage(LORA_CHANNEL, &payload, sizeof(Payload));
   
   Serial.print("Package ID:");
   Serial.println(payload.package_id);
@@ -226,6 +275,8 @@ void print_data_to_serial() {
   Serial.print(*(float*)payload.temp, 2);
   Serial.print(", Irtifa: ");
   Serial.print(*(float*)payload.altitude);
+  Serial.print(", Basinc: ");
+  Serial.print(*(float*)payload.pressure);
   Serial.print(", Enlem: ");
   Serial.print(*(float*)payload.gps_lat, 6);
   Serial.print(", Boylam: ");
@@ -246,4 +297,43 @@ static void smartdelay(unsigned long ms)
     while (Serial3.available())
       gps.encode(Serial3.read());
   } while (millis() - start < ms);
+}
+
+void printParameters(struct Configuration configuration) {
+	Serial.println("----------------------------------------");
+
+	Serial.print(F("HEAD : "));  Serial.print(configuration.COMMAND, HEX);Serial.print(" ");Serial.print(configuration.STARTING_ADDRESS, HEX);Serial.print(" ");Serial.println(configuration.LENGHT, HEX);
+	Serial.println(F(" "));
+	Serial.print(F("AddH : "));  Serial.println(configuration.ADDH, HEX);
+	Serial.print(F("AddL : "));  Serial.println(configuration.ADDL, HEX);
+	Serial.print(F("NetID : "));  Serial.println(configuration.NETID, HEX);
+	Serial.println(F(" "));
+	Serial.print(F("Chan : "));  Serial.print(configuration.CHAN, DEC); Serial.print(" -> "); Serial.println(configuration.getChannelDescription());
+	Serial.println(F(" "));
+	Serial.print(F("SpeedParityBit     : "));  Serial.print(configuration.SPED.uartParity, BIN);Serial.print(" -> "); Serial.println(configuration.SPED.getUARTParityDescription());
+	Serial.print(F("SpeedUARTDatte     : "));  Serial.print(configuration.SPED.uartBaudRate, BIN);Serial.print(" -> "); Serial.println(configuration.SPED.getUARTBaudRateDescription());
+	Serial.print(F("SpeedAirDataRate   : "));  Serial.print(configuration.SPED.airDataRate, BIN);Serial.print(" -> "); Serial.println(configuration.SPED.getAirDataRateDescription());
+	Serial.println(F(" "));
+	Serial.print(F("OptionSubPacketSett: "));  Serial.print(configuration.OPTION.subPacketSetting, BIN);Serial.print(" -> "); Serial.println(configuration.OPTION.getSubPacketSetting());
+	Serial.print(F("OptionTranPower    : "));  Serial.print(configuration.OPTION.transmissionPower, BIN);Serial.print(" -> "); Serial.println(configuration.OPTION.getTransmissionPowerDescription());
+	Serial.print(F("OptionRSSIAmbientNo: "));  Serial.print(configuration.OPTION.RSSIAmbientNoise, BIN);Serial.print(" -> "); Serial.println(configuration.OPTION.getRSSIAmbientNoiseEnable());
+	Serial.println(F(" "));
+	Serial.print(F("TransModeWORPeriod : "));  Serial.print(configuration.TRANSMISSION_MODE.WORPeriod, BIN);Serial.print(" -> "); Serial.println(configuration.TRANSMISSION_MODE.getWORPeriodByParamsDescription());
+	Serial.print(F("TransModeTransContr: "));  Serial.print(configuration.TRANSMISSION_MODE.WORTransceiverControl, BIN);Serial.print(" -> "); Serial.println(configuration.TRANSMISSION_MODE.getWORTransceiverControlDescription());
+	Serial.print(F("TransModeEnableLBT : "));  Serial.print(configuration.TRANSMISSION_MODE.enableLBT, BIN);Serial.print(" -> "); Serial.println(configuration.TRANSMISSION_MODE.getLBTEnableByteDescription());
+	Serial.print(F("TransModeEnableRSSI: "));  Serial.print(configuration.TRANSMISSION_MODE.enableRSSI, BIN);Serial.print(" -> "); Serial.println(configuration.TRANSMISSION_MODE.getRSSIEnableByteDescription());
+	Serial.print(F("TransModeEnabRepeat: "));  Serial.print(configuration.TRANSMISSION_MODE.enableRepeater, BIN);Serial.print(" -> "); Serial.println(configuration.TRANSMISSION_MODE.getRepeaterModeEnableByteDescription());
+	Serial.print(F("TransModeFixedTrans: "));  Serial.print(configuration.TRANSMISSION_MODE.fixedTransmission, BIN);Serial.print(" -> "); Serial.println(configuration.TRANSMISSION_MODE.getFixedTransmissionDescription());
+
+	Serial.println("----------------------------------------");
+}
+
+void printModuleInformation(struct ModuleInformation moduleInformation) {
+	Serial.println("----------------------------------------");
+	Serial.print(F("HEAD: "));  Serial.print(moduleInformation.COMMAND, HEX);Serial.print(" ");Serial.print(moduleInformation.STARTING_ADDRESS, HEX);Serial.print(" ");Serial.println(moduleInformation.LENGHT, DEC);
+
+	Serial.print(F("Model no.: "));  Serial.println(moduleInformation.model, HEX);
+	Serial.print(F("Version  : "));  Serial.println(moduleInformation.version, HEX);
+	Serial.print(F("Features : "));  Serial.println(moduleInformation.features, HEX);
+	Serial.println("----------------------------------------");
 }
